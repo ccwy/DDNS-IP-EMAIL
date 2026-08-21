@@ -12,13 +12,16 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
-	"regexp"
 )
 
-// ===== 日志内存缓冲区实现 =====
+// 北京时区 (UTC+8)
+var cstZone = time.FixedZone("CST", 8*3600)
+
+// ===== 日志内存缓冲区 =====
 type LogMemory struct {
 	mu   sync.Mutex
 	logs []string
@@ -26,25 +29,20 @@ type LogMemory struct {
 }
 
 func NewLogMemory(maxLines int) *LogMemory {
-	return &LogMemory{
-		logs: make([]string, 0, maxLines),
-		max:  maxLines,
-	}
+	return &LogMemory{logs: make([]string, 0, maxLines), max: maxLines}
 }
 
-// 修复这里的返回值类型，使其完全符合 io.Writer 接口定义
 func (l *LogMemory) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
 	line := strings.TrimSpace(string(p))
 	if line != "" {
 		if len(l.logs) >= l.max {
-			l.logs = l.logs[1:] // 超过最大行数移除最旧的一条
+			l.logs = l.logs[1:]
 		}
-		l.logs = append(l.logs, fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), line))
+		l.logs = append(l.logs, fmt.Sprintf("[%s] %s", time.Now().In(cstZone).Format("15:04:05"), line))
 	}
 	l.mu.Unlock()
-
-	return os.Stdout.Write(p) // 正确返回 (int, error)
+	return os.Stdout.Write(p)
 }
 
 func (l *LogMemory) GetLogs() []string {
@@ -55,9 +53,9 @@ func (l *LogMemory) GetLogs() []string {
 	return result
 }
 
-var logBuf = NewLogMemory(100) // 内存中最多保留 100 条最新日志
+var logBuf = NewLogMemory(100)
 
-// ===== 核心数据定义 =====
+// ===== 配置与监控状态 =====
 type Config struct {
 	IntervalMinutes int    `json:"interval_minutes"`
 	NotifyType      string `json:"notify_type"`
@@ -69,16 +67,23 @@ type Config struct {
 	WebhookURL      string `json:"webhook_url"`
 }
 
+type Status struct {
+	LastIP     string `json:"last_ip"`
+	QueryTime  int64  `json:"query_time_ms"` // 查询耗时(毫秒)
+	LastCheck  string `json:"last_check"`    // 最后检查时间
+	UsedSource string `json:"used_source"`   // 成功的接口
+}
+
 var (
 	config     Config
-	configLock sync.Mutex
-	lastIP     string
+	status     Status
+	dataLock   sync.Mutex
 	configFile = "/data/config.json"
 )
 
 func loadConfig() {
-	configLock.Lock()
-	defer configLock.Unlock()
+	dataLock.Lock()
+	defer dataLock.Unlock()
 	file, err := os.ReadFile(configFile)
 	if err == nil {
 		json.Unmarshal(file, &config)
@@ -88,23 +93,78 @@ func loadConfig() {
 }
 
 func saveConfig(newCfg Config) error {
-	configLock.Lock()
-	defer configLock.Unlock()
+	dataLock.Lock()
+	defer dataLock.Unlock()
 	config = newCfg
 	data, _ := json.MarshalIndent(config, "", "  ")
 	os.MkdirAll("/data", 0755)
 	return os.WriteFile(configFile, data, 0644)
 }
 
+// ===== 带耗时统计的 IP 查询函数 =====
+func getPublicIP() (string, int64, string, error) {
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: (&net.Dialer{
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		ResponseHeaderTimeout: 3 * time.Second,
+	}
+
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: transport,
+	}
+
+	ipRegex := regexp.MustCompile(`(?:[0-9]{1,3}\.){3}[0-9]{1,3}`)
+	endpoints := []string{
+		"http://myip.ipip.net",
+		"http://members.3322.org/dyndns/getip",
+		"https://api.ipify.org",
+		"https://api.ip.sb/ip",
+	}
+
+	var lastErr error
+	for _, url := range endpoints {
+		start := time.Now() // 开启计时
+		req, err := http.NewRequest("GET", url, nil)
+		if err != nil {
+			continue
+		}
+		req.Header.Set("User-Agent", "curl/7.88.1")
+
+		resp, err := client.Do(req)
+		elapsed := time.Since(start).Milliseconds() // 计算毫秒数
+
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if err == nil {
+			matchedIP := ipRegex.FindString(string(body))
+			if matchedIP != "" && net.ParseIP(matchedIP) != nil {
+				return matchedIP, elapsed, url, nil
+			}
+		}
+	}
+
+	return "", 0, "", fmt.Errorf("所有接口查询失败, 最后错误: %v", lastErr)
+}
+
+// ===== 纯 SSL 邮件发送 =====
 func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) error {
 	addr := fmt.Sprintf("%s:%s", smtpHost, smtpPort)
 	host, _, _ := net.SplitHostPort(addr)
 
-	// 1. 生成唯一 Message-ID 和标准 RFC1123Z 时间戳，防止被识别为垃圾邮件
 	msgID := fmt.Sprintf("<%d.%d@%s>", time.Now().UnixNano(), os.Getpid(), host)
-	dateStr := time.Now().Format(time.RFC1123Z)
+	dateStr := time.Now().In(cstZone).Format(time.RFC1123Z)
 
-	// 2. 严格按 RFC 822 格式构建 Header
 	header := make(map[string]string)
 	header["From"] = fmt.Sprintf("<%s>", user)
 	header["To"] = fmt.Sprintf("<%s>", to)
@@ -120,11 +180,7 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	}
 	message += "\r\n" + content
 
-	// 3. 建立 SSL 连接
-	conn, err := tls.Dial("tcp", addr, &tls.Config{
-		ServerName:         host,
-		InsecureSkipVerify: false,
-	})
+	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
 	if err != nil {
 		return fmt.Errorf("TLS 连接失败: %v", err)
 	}
@@ -154,17 +210,16 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	if err != nil {
 		return err
 	}
-
 	return w.Close()
 }
 
 func sendNotification(currentIP string) {
-	configLock.Lock()
+	dataLock.Lock()
 	cfg := config
-	configLock.Unlock()
+	dataLock.Unlock()
 
 	subject := "公网 IP 变动提醒"
-	content := fmt.Sprintf("您的最新公网 IP 为：%s\n更新时间：%s", currentIP, time.Now().Format("2006-01-02 15:04:05"))
+	content := fmt.Sprintf("您的最新公网 IP 为：%s\n更新时间：%s", currentIP, time.Now().In(cstZone).Format("2006-01-02 15:04:05"))
 
 	if cfg.NotifyType == "email" && cfg.SMTPHost != "" {
 		log.Printf("正在通过 SSL 发送邮件至 %s...", cfg.ToEmail)
@@ -187,80 +242,35 @@ func sendNotification(currentIP string) {
 	}
 }
 
-func getPublicIP() (string, error) {
-	// 针对容器网络优化的 Dial 策略
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		DialContext: (&net.Dialer{
-			Timeout:   3 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		ForceAttemptHTTP2:     false, // 禁用 HTTP/2 避免部分 API 握手卡死
-		ResponseHeaderTimeout: 3 * time.Second,
-	}
-
-	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: transport,
-	}
-
-	ipRegex := regexp.MustCompile(`(?:[0-9]{1,3}\.){3}[0-9]{1,3}`)
-
-	endpoints := []string{
-		"http://myip.ipip.net",
-		"http://members.3322.org/dyndns/getip",
-		"https://api.ipify.org",
-		"https://api.ip.sb/ip",
-	}
-
-	var lastErr error
-	for _, url := range endpoints {
-		req, err := http.NewRequest("GET", url, nil)
-		if err != nil {
-			continue
-		}
-		req.Header.Set("User-Agent", "curl/7.88.1")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			lastErr = err
-			log.Printf("请求 %s 失败: %v", url, err)
-			continue
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if err == nil {
-			matchedIP := ipRegex.FindString(string(body))
-			if matchedIP != "" && net.ParseIP(matchedIP) != nil {
-				return matchedIP, nil
-			}
-		}
-	}
-
-	// 修复这里的返回值：使用 fmt.Errorf 生成标准的 error 类型
-	return "", fmt.Errorf("接口均失败, 最后一次错误: %v", lastErr)
-}
-
+// ===== 后台 IP 检测任务 =====
 func ipCheckerWorker() {
 	for {
-		configLock.Lock()
+		dataLock.Lock()
 		interval := config.IntervalMinutes
-		configLock.Unlock()
+		dataLock.Unlock()
 		if interval < 1 {
 			interval = 5
 		}
 
-		ip, err := getPublicIP()
+		ip, ms, source, err := getPublicIP()
+		nowStr := time.Now().In(cstZone).Format("15:04:05")
+
 		if err == nil && ip != "" {
-			if lastIP != "" && ip != lastIP {
-				log.Printf("IP 发生变动: %s -> %s", lastIP, ip)
+			dataLock.Lock()
+			oldIP := status.LastIP
+			status.LastIP = ip
+			status.QueryTime = ms
+			status.LastCheck = nowStr
+			status.UsedSource = source
+			dataLock.Unlock()
+
+			// 比对 IP 变动：只有与旧 IP 不同且旧 IP 不为空时触发通知
+			if oldIP != "" && ip != oldIP {
+				log.Printf("检测到公网 IP 变动: %s -> %s (耗时: %dms, 来自: %s)", oldIP, ip, ms, source)
 				sendNotification(ip)
 			} else {
-				log.Printf("检查完成，IP 未变动 (%s)", ip)
+				log.Printf("检查完成，IP 未变动 (%s | 耗时: %dms)", ip, ms)
 			}
-			lastIP = ip
 		} else {
 			log.Printf("获取公网 IP 失败: %v", err)
 		}
@@ -270,7 +280,6 @@ func ipCheckerWorker() {
 }
 
 func main() {
-	// 将 log 输出重定向至自定义的 LogMemory
 	log.SetOutput(logBuf)
 	log.SetFlags(0)
 
@@ -278,7 +287,6 @@ func main() {
 	log.Println("服务初始化完成，开始后台监控...")
 	go ipCheckerWorker()
 
-	// 主页面
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			r.ParseForm()
@@ -293,9 +301,14 @@ func main() {
 			fmt.Sscanf(r.FormValue("interval_minutes"), "%d", &newCfg.IntervalMinutes)
 
 			if err := saveConfig(newCfg); err == nil {
-				log.Println("配置已成功更新并保存")
-				if r.FormValue("action") == "test" && lastIP != "" {
-					go sendNotification(lastIP + " (测试推送)")
+				log.Println("配置已更新")
+				if r.FormValue("action") == "test" {
+					dataLock.Lock()
+					curIP := status.LastIP
+					dataLock.Unlock()
+					if curIP != "" {
+						go sendNotification(curIP + " (测试推送)")
+					}
 				}
 			}
 			http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -303,16 +316,15 @@ func main() {
 		}
 
 		tmpl, _ := template.ParseFiles("templates/index.html")
-		configLock.Lock()
+		dataLock.Lock()
 		data := struct {
 			Config Config
-			LastIP string
-		}{Config: config, LastIP: lastIP}
-		configLock.Unlock()
+			Status Status
+		}{Config: config, Status: status}
+		dataLock.Unlock()
 		tmpl.Execute(w, data)
 	})
 
-	// 获取实时日志接口 (JSON)
 	http.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(logBuf.GetLogs())

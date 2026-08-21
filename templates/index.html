@@ -8,7 +8,13 @@
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; }
         .card { max-width: 600px; margin: 0 auto 20px auto; background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
         h2, h3 { margin-top: 0; color: #333; }
-        .status { background: #eef9f2; color: #1e7e34; padding: 10px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }
+        
+        /* 状态指示面板 */
+        .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+        .status-box { background: #eef9f2; border: 1px solid #c3e6cb; color: #155724; padding: 12px; border-radius: 8px; text-align: center; }
+        .status-box .val { font-size: 18px; font-weight: bold; margin-top: 4px; }
+        .status-box .lbl { font-size: 12px; color: #666; }
+
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; color: #666; font-size: 14px; }
         input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
@@ -17,14 +23,25 @@
         .btn-primary { background: #007bff; color: white; }
         .btn-secondary { background: #6c757d; color: white; }
         
-        /* 日志控制台样式 */
         .log-container { background: #1e1e1e; color: #00ff66; padding: 15px; border-radius: 8px; font-family: "Courier New", Courier, monospace; font-size: 12px; height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>🌐 IP 监控通知配置</h2>
-        <div class="status">当前监控 IP: {{if .LastIP}}{{.LastIP}}{{else}}正在获取...{{end}}</div>
+        <h2>🌐 DDNS IP 监控面板</h2>
+        
+        <!-- 可视化状态看板 -->
+        <div class="status-grid">
+            <div class="status-box">
+                <div class="lbl">当前公网 IP</div>
+                <div class="val">{{if .Status.LastIP}}{{.Status.LastIP}}{{else}}查询中...{{end}}</div>
+            </div>
+            <div class="status-box" style="background:#e8f4f8; border-color:#b8daff; color:#004085;">
+                <div class="lbl">查询耗时 (响应速度)</div>
+                <div class="val">{{if .Status.QueryTime}}{{.Status.QueryTime}} ms{{else}}-{{end}}</div>
+            </div>
+        </div>
+
         <form method="POST">
             <div class="form-group">
                 <label>检测间隔 (分钟)</label>
@@ -34,7 +51,7 @@
                 <label>通知通道</label>
                 <select name="notify_type" id="notifyType" onchange="toggleFields()">
                     <option value="webhook" {{if eq .Config.NotifyType "webhook"}}selected{{end}}>Webhook (Server酱/PushPlus/Telegram)</option>
-                    <option value="email" {{if eq .Config.NotifyType "email"}}selected{{end}}>SMTP 邮件 (支持 465 SSL)</option>
+                    <option value="email" {{if eq .Config.NotifyType "email"}}selected{{end}}>SMTP 邮件 (SSL 端口)</option>
                 </select>
             </div>
 
@@ -60,10 +77,9 @@
         </form>
     </div>
 
-    <!-- 实时日志显示区域 -->
     <div class="card">
-        <h3>📋 实时运行日志</h3>
-        <div class="log-container" id="logBox">正在加载日志...</div>
+        <h3>📋 实时运行日志 (带耗时信息)</h3>
+        <div class="log-container" id="logBox">加载日志中...</div>
     </div>
 
     <script>
@@ -74,7 +90,6 @@
         }
         toggleFields();
 
-        // 轮询刷新日志
         function fetchLogs() {
             fetch('/api/logs')
                 .then(response => response.json())
@@ -82,7 +97,6 @@
                     const logBox = document.getElementById('logBox');
                     const isAtBottom = logBox.scrollHeight - logBox.clientHeight <= logBox.scrollTop + 20;
                     logBox.innerText = logs.join('\n');
-                    // 如果原本滚动条在底部，保持自动置底
                     if (isAtBottom) {
                         logBox.scrollTop = logBox.scrollHeight;
                     }
@@ -91,7 +105,7 @@
         }
 
         fetchLogs();
-        setInterval(fetchLogs, 3000); // 每 3 秒自动更新一次日志
+        setInterval(fetchLogs, 3000);
     </script>
 </body>
 </html>
