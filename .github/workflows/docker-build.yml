@@ -1,0 +1,30 @@
+name: Build Synology Docker Image
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker Image
+        run: |
+          docker build --platform linux/amd64 -t ddns-notifier:latest .
+
+      - name: Export Image to TAR
+        run: |
+          docker save ddns-notifier:latest -o ddns-notifier-amd64.tar
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ddns-notifier-ds224
+          path: ddns-notifier-amd64.tar
