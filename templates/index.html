@@ -16,21 +16,7 @@
 
         .form-group { margin-bottom: 15px; }
         label { display: block; margin-bottom: 5px; color: #666; font-size: 14px; }
-        input[type="text"], input[type="number"], input[type="email"], input[type="url"], input[type="password"], select { 
-            width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; 
-        }
-
-        /* Toggle 开关样式 */
-        .switch-container { display: flex; align-items: center; justify-content: space-between; background: #f8f9fa; padding: 12px; border-radius: 8px; border: 1px solid #e9ecef; margin-bottom: 15px; }
-        .switch-label { font-size: 14px; font-weight: bold; color: #333; }
-        .switch-desc { font-size: 12px; color: #6c757d; margin-top: 2px; }
-        .switch { position: relative; display: inline-block; width: 46px; height: 24px; }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .3s; border-radius: 24px; }
-        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
-        input:checked + .slider { background-color: #28a745; }
-        input:checked + .slider:before { transform: translateX(22px); }
-
+        input, select { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; }
         .btn-group { display: flex; gap: 10px; margin-top: 20px; }
         button { flex: 1; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
         .btn-primary { background: #007bff; color: white; }
@@ -55,18 +41,6 @@
         </div>
 
         <form method="POST">
-            <!-- 允许公网访问开关 -->
-            <div class="switch-container">
-                <div>
-                    <div class="switch-label">允许公网访问 Web 面板</div>
-                    <div class="switch-desc">关闭后仅允许局域网内网 IP (192.168.x / 10.x / 127.0.0.1) 访问控制台</div>
-                </div>
-                <label class="switch">
-                    <input type="checkbox" name="allow_public" {{if .Config.AllowPublic}}checked{{end}}>
-                    <span class="slider"></span>
-                </label>
-            </div>
-
             <div class="form-group">
                 <label>检测间隔 (分钟)</label>
                 <input type="number" name="interval_minutes" value="{{.Config.IntervalMinutes}}" min="1" required>
@@ -74,8 +48,8 @@
             <div class="form-group">
                 <label>通知通道</label>
                 <select name="notify_type" id="notifyType" onchange="toggleFields()">
+					<option value="email" {{if eq .Config.NotifyType "email"}}selected{{end}}>SMTP 邮件 (SSL 端口)</option>
                     <option value="webhook" {{if eq .Config.NotifyType "webhook"}}selected{{end}}>Webhook (Server酱/PushPlus/WxPusher)</option>
-                    <option value="email" {{if eq .Config.NotifyType "email"}}selected{{end}}>SMTP 邮件 (SSL 端口)</option>
                 </select>
             </div>
 
