@@ -128,7 +128,7 @@ func getPublicIP() (string, int64, string, error) {
 
 	var lastErr error
 	for _, url := range endpoints {
-		start := time.Now() // 开启计时
+		start := time.Now()
 		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
 			continue
@@ -136,7 +136,7 @@ func getPublicIP() (string, int64, string, error) {
 		req.Header.Set("User-Agent", "curl/7.88.1")
 
 		resp, err := client.Do(req)
-		elapsed := time.Since(start).Milliseconds() // 计算毫秒数
+		elapsed := time.Since(start).Milliseconds()
 
 		if err != nil {
 			lastErr = err
@@ -213,13 +213,19 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	return w.Close()
 }
 
-func sendNotification(currentIP string) {
+func sendNotification(oldIP, currentIP string) {
 	dataLock.Lock()
 	cfg := config
 	dataLock.Unlock()
 
-	subject := "公网 IP 变动提醒"
-	content := fmt.Sprintf("您的最新公网 IP 为：%s\n更新时间：%s", currentIP, time.Now().In(cstZone).Format("2006-01-02 15:04:05"))
+	subject := "🌐 公网 IP 变动提醒"
+	content := fmt.Sprintf(
+		"您的公网 IP 已发生变更！\n\n"+
+			"• 旧 IP 地址：%s\n"+
+			"• 新 IP 地址：%s\n"+
+			"• 变更时间：%s",
+		oldIP, currentIP, time.Now().In(cstZone).Format("2006-01-02 15:04:05"),
+	)
 
 	if cfg.NotifyType == "email" && cfg.SMTPHost != "" {
 		log.Printf("正在通过 SSL 发送邮件至 %s...", cfg.ToEmail)
@@ -264,10 +270,9 @@ func ipCheckerWorker() {
 			status.UsedSource = source
 			dataLock.Unlock()
 
-			// 比对 IP 变动：只有与旧 IP 不同且旧 IP 不为空时触发通知
 			if oldIP != "" && ip != oldIP {
 				log.Printf("检测到公网 IP 变动: %s -> %s (耗时: %dms, 来自: %s)", oldIP, ip, ms, source)
-				sendNotification(ip)
+				sendNotification(oldIP, ip)
 			} else {
 				log.Printf("检查完成，IP 未变动 (%s | 耗时: %dms)", ip, ms)
 			}
@@ -301,13 +306,15 @@ func main() {
 			fmt.Sscanf(r.FormValue("interval_minutes"), "%d", &newCfg.IntervalMinutes)
 
 			if err := saveConfig(newCfg); err == nil {
-				log.Println("配置已更新")
+				log.Println("配置已更新并保存")
 				if r.FormValue("action") == "test" {
 					dataLock.Lock()
 					curIP := status.LastIP
 					dataLock.Unlock()
 					if curIP != "" {
-						go sendNotification(curIP + " (测试推送)")
+						go sendNotification("123.123.123.123 (模拟旧IP)", curIP+" (测试推送)")
+					} else {
+						go sendNotification("未知", "1.1.1.1 (测试推送)")
 					}
 				}
 			}
