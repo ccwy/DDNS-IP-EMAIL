@@ -224,12 +224,14 @@ func sendNotification(oldIP, currentIP string) {
 	dataLock.Unlock()
 
 	subject := "🌐 公网 IP 变动提醒"
+	
+	// 调整结构：新 IP 放前面，旧 IP 放后面
 	content := fmt.Sprintf(
 		"您的公网 IP 已发生变更！\n\n"+
 			"• 新 IP 地址：%s\n"+
 			"• 旧 IP 地址：%s\n"+
 			"• 变更时间：%s",
-		oldIP, currentIP, time.Now().In(cstZone).Format("2006-01-02 15:04:05"),
+		currentIP, oldIP, time.Now().In(cstZone).Format("2006-01-02 15:04:05"),
 	)
 
 	if cfg.NotifyType == "email" && cfg.SMTPHost != "" {
@@ -242,7 +244,11 @@ func sendNotification(oldIP, currentIP string) {
 		}
 	} else if cfg.NotifyType == "webhook" && cfg.WebhookURL != "" {
 		log.Println("正在发送 Webhook 推送...")
-		payload, _ := json.Marshal(map[string]string{"title": subject, "content": content, "text": content})
+		payload, _ := json.Marshal(map[string]string{
+			"title":   subject,
+			"content": content,
+			"text":    content,
+		})
 		resp, err := http.Post(cfg.WebhookURL, "application/json", bytes.NewBuffer(payload))
 		if err != nil {
 			log.Printf("Webhook 推送失败: %v", err)
