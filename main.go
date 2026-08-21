@@ -59,21 +59,22 @@ var logBuf = NewLogMemory(100)
 // ===== 配置与监控状态 =====
 type Config struct {
 	IntervalMinutes int    `json:"interval_minutes"`
+	AllowPublic     bool   `json:"allow_public"` // 是否允许公网访问 Web 界面
 	NotifyType      string `json:"notify_type"`
 	SMTPHost        string `json:"smtp_host"`
 	SMTPPort        string `json:"smtp_port"`
 	SMTPUser        string `json:"smtp_user"`
 	SMTPPass        string `json:"smtp_pass"`
-	SenderName      string `json:"sender_name"` // 发件人名称
+	SenderName      string `json:"sender_name"`
 	ToEmail         string `json:"to_email"`
 	WebhookURL      string `json:"webhook_url"`
 }
 
 type Status struct {
 	LastIP     string `json:"last_ip"`
-	QueryTime  int64  `json:"query_time_ms"` // 查询耗时(毫秒)
-	LastCheck  string `json:"last_check"`    // 最后检查时间
-	UsedSource string `json:"used_source"`   // 成功的接口
+	QueryTime  int64  `json:"query_time_ms"`
+	LastCheck  string `json:"last_check"`
+	UsedSource string `json:"used_source"`
 }
 
 var (
@@ -90,7 +91,8 @@ func loadConfig() {
 	if err == nil {
 		json.Unmarshal(file, &config)
 	} else {
-		config = Config{IntervalMinutes: 10, NotifyType: "webhook"}
+		// 默认开关关闭，增强安全保障
+		config = Config{IntervalMinutes: 10, AllowPublic: false, NotifyType: "webhook"}
 	}
 }
 
@@ -101,6 +103,53 @@ func saveConfig(newCfg Config) error {
 	data, _ := json.MarshalIndent(config, "", "  ")
 	os.MkdirAll("/data", 0755)
 	return os.WriteFile(configFile, data, 0644)
+}
+
+// ===== 判断请求来源 IP 是否为内网/局域网地址 =====
+func isPrivateIP(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+
+	// 本地回环地址及私有 IPv4 段
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		return true
+	}
+
+	ip4 := ip.To4()
+	if ip4 != nil {
+		switch {
+		case ip4[0] == 10:
+			return true
+		case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+			return true
+		case ip4[0] == 192 && ip4[1] == 168:
+			return true
+		}
+	}
+	return false
+}
+
+// ===== 公网访问控制中间件 =====
+func publicAccessMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		dataLock.Lock()
+		allowPublic := config.AllowPublic
+		dataLock.Unlock()
+
+		// 若未开启公网访问，且请求来源于非局域网 IP
+		if !allowPublic && !isPrivateIP(r.RemoteAddr) {
+			http.Error(w, "403 Forbidden: 网页已被管理员设置为仅限局域网内网访问。", http.StatusForbidden)
+			log.Printf("[安全拦截] 阻止公网 IP %s 访问后台页面", r.RemoteAddr)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // ===== 带耗时统计的 IP 查询函数 =====
@@ -159,7 +208,7 @@ func getPublicIP() (string, int64, string, error) {
 	return "", 0, "", fmt.Errorf("所有接口查询失败, 最后错误: %v", lastErr)
 }
 
-// ===== 纯 SSL 邮件发送（支持发件人名称与标题 RFC 2047 编码） =====
+// ===== 纯 SSL 邮件发送（支持 RFC 2047 编码） =====
 func sendEmailSSL(smtpHost, smtpPort, user, pass, senderName, to, subject, content string) error {
 	addr := fmt.Sprintf("%s:%s", smtpHost, smtpPort)
 	host, _, _ := net.SplitHostPort(addr)
@@ -167,10 +216,8 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, senderName, to, subject, conte
 	msgID := fmt.Sprintf("<%d.%d@%s>", time.Now().UnixNano(), os.Getpid(), host)
 	dateStr := time.Now().In(cstZone).Format(time.RFC1123Z)
 
-	// 对邮件标题进行 RFC 2047 UTF-8 Base64 编码，解决中文和 Emoji 乱码问题
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
 
-	// 拼装发件人信息
 	fromHeader := fmt.Sprintf("<%s>", user)
 	if senderName != "" {
 		encodedSenderName := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(senderName)))
@@ -231,7 +278,6 @@ func sendNotification(oldIP, currentIP string) {
 	dataLock.Unlock()
 
 	subject := "🌐 公网 IP 变动提醒"
-	// 新 IP 放前面，旧 IP 放后面
 	content := fmt.Sprintf(
 		"您的公网 IP 已发生变更！\n\n"+
 			"• 新 IP 地址：%s\n"+
@@ -254,7 +300,6 @@ func sendNotification(oldIP, currentIP string) {
 		var payload []byte
 		targetURL := cfg.WebhookURL
 
-		// 自动适配 WxPusher 格式
 		if strings.Contains(targetURL, "wxpusher.zjiecode.com") {
 			parts := strings.Split(targetURL, "/")
 			var appToken, uid string
@@ -338,16 +383,18 @@ func main() {
 	log.Println("服务初始化完成，开始后台监控...")
 	go ipCheckerWorker()
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	// 核心 handler 加上公网访问拦截
+	http.HandleFunc("/", publicAccessMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			r.ParseForm()
 			var newCfg Config
+			newCfg.AllowPublic = r.FormValue("allow_public") == "on" // 读取 checkbox 开关
 			newCfg.NotifyType = r.FormValue("notify_type")
 			newCfg.SMTPHost = r.FormValue("smtp_host")
 			newCfg.SMTPPort = r.FormValue("smtp_port")
 			newCfg.SMTPUser = r.FormValue("smtp_user")
 			newCfg.SMTPPass = r.FormValue("smtp_pass")
-			newCfg.SenderName = r.FormValue("sender_name") // 获取表单中的发件人名称
+			newCfg.SenderName = r.FormValue("sender_name")
 			newCfg.ToEmail = r.FormValue("to_email")
 			newCfg.WebhookURL = r.FormValue("webhook_url")
 			fmt.Sscanf(r.FormValue("interval_minutes"), "%d", &newCfg.IntervalMinutes)
@@ -359,7 +406,6 @@ func main() {
 					curIP := status.LastIP
 					dataLock.Unlock()
 
-					// 取消模拟 IP，若不存在旧 IP 则设为未收录
 					oldIP := "未收录"
 					if curIP != "" {
 						oldIP = curIP
@@ -380,12 +426,12 @@ func main() {
 		}{Config: config, Status: status}
 		dataLock.Unlock()
 		tmpl.Execute(w, data)
-	})
+	}))
 
-	http.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/logs", publicAccessMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(logBuf.GetLogs())
-	})
+	}))
 
 	log.Println("Web 界面运行在 :49809")
 	log.Fatal(http.ListenAndServe(":49809", nil))
