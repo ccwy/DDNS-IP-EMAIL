@@ -6,7 +6,7 @@
 
 使用方法：
 
-1，下载打包好的镜像
+1，下载打包好的镜像，下载地址：https://github.com/ccwy/DDNS-IP-EMAIL/releases
 
 2，在群晖Container Manager里面，点击映像-操作-导入-从文件添加-从本地设备，选择你下载的镜像。
 
