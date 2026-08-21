@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"regexp"
 )
 
 // ===== 日志内存缓冲区实现 =====
@@ -170,46 +171,59 @@ func sendNotification(currentIP string) {
 }
 
 func getPublicIP() (string, error) {
-	// 创建带 5 秒硬性超时的 HTTP 客户端
+	// 针对容器网络优化的 Dial 策略
+	transport := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		DialContext: (&net.Dialer{
+			Timeout:   3 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false, // 禁用 HTTP/2 避免部分 API 握手卡死
+		ResponseHeaderTimeout: 3 * time.Second,
+	}
+
 	client := &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout:   5 * time.Second,
+		Transport: transport,
 	}
 
-	// 依次尝试多个国内外极速 IP 检测接口
+	ipRegex := regexp.MustCompile(`(?:[0-9]{1,3}\.){3}[0-9]{1,3}`)
+
 	endpoints := []string{
+		"http://myip.ipip.net",
+		"http://members.3322.org/dyndns/getip",
 		"https://api.ipify.org",
-		"https://myip.ipip.net/s",
 		"https://api.ip.sb/ip",
-		"https://ddns.oray.com/checkip",
 	}
 
+	var lastErr error
 	for _, url := range endpoints {
-		resp, err := client.Get(url)
+		req, err := http.NewRequest("GET", url, nil)
 		if err != nil {
-			continue // 当前接口超时或报错，自动尝试下一个
+			continue
 		}
-		
+		req.Header.Set("User-Agent", "curl/7.88.1")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			// 将具体错误打印到控制台，方便排查是 DNS 还是 TCP 超时
+			log.Printf("请求 %s 失败: %v", url, err)
+			continue
+		}
+
 		body, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		
+
 		if err == nil {
-			// 提取 IP 字符串
-			ip := strings.TrimSpace(string(body))
-			// 过滤 HTML 标签（针对部分返回 HTML 网页的接口）
-			if strings.Contains(ip, "IP") {
-				for _, part := range strings.Fields(ip) {
-					if net.ParseIP(part) != nil {
-						return part, nil
-					}
-				}
-			}
-			if net.ParseIP(ip) != nil {
-				return ip, nil
+			matchedIP := ipRegex.FindString(string(body))
+			if matchedIP != "" && net.ParseIP(matchedIP) != nil {
+				return matchedIP, nil
 			}
 		}
 	}
 
-	return "", fmt.Errorf("所有公网 IP 查询接口请求均超时或失败")
+	return "", fmt.Sprintf("接口均失败, 最后一次错误: %v", lastErr)
 }
 
 func ipCheckerWorker() {
