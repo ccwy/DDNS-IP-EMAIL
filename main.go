@@ -31,9 +31,9 @@ func NewLogMemory(maxLines int) *LogMemory {
 	}
 }
 
-func (l *LogMemory) Write(p []byte) (n int, err int) {
+// 修复这里的返回值类型，使其完全符合 io.Writer 接口定义
+func (l *LogMemory) Write(p []byte) (n int, err error) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	line := strings.TrimSpace(string(p))
 	if line != "" {
 		if len(l.logs) >= l.max {
@@ -41,7 +41,9 @@ func (l *LogMemory) Write(p []byte) (n int, err int) {
 		}
 		l.logs = append(l.logs, fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), line))
 	}
-	return os.Stdout.Write(p) // 同时输出到终端控制台
+	l.mu.Unlock()
+
+	return os.Stdout.Write(p) // 正确返回 (int, error)
 }
 
 func (l *LogMemory) GetLogs() []string {
