@@ -244,17 +244,51 @@ func sendNotification(oldIP, currentIP string) {
 		}
 	} else if cfg.NotifyType == "webhook" && cfg.WebhookURL != "" {
 		log.Println("正在发送 Webhook 推送...")
-		payload, _ := json.Marshal(map[string]string{
-			"title":   subject,
-			"content": content,
-			"text":    content,
-		})
+
+		var payload []byte
+
+		// 判断是否为 WxPusher 链接，自动适配其专属 JSON 格式
+		if strings.Contains(cfg.WebhookURL, "wxpusher.zjiecode.com") {
+			// 1. 尝试从 URL 路径中提取 appToken 和 uid
+			// URL 格式: https://wxpusher.zjiecode.com/api/send/message/AT_xxx/UID_xxx
+			parts := strings.Split(cfg.WebhookURL, "/")
+			var appToken, uid string
+			for _, part := range parts {
+				if strings.HasPrefix(part, "AT_") {
+					appToken = part
+				} else if strings.HasPrefix(part, "UID_") {
+					uid = part
+				}
+			}
+
+			// 2. 构造 WxPusher 标准请求体
+			wxData := map[string]interface{}{
+				"appToken":    appToken,
+				"content":     content,
+				"summary":     subject,
+				"contentType": 1, // 1 表示文字，2 表示 HTML，3 表示 Markdown
+				"uids":        []string{uid},
+			}
+			payload, _ = json.Marshal(wxData)
+
+			// 修正请求的目标地址为 WxPusher 标准 API
+			cfg.WebhookURL = "https://wxpusher.zjiecode.com/api/send/message"
+		} else {
+			// 普通 Webhook 格式
+			payload, _ = json.Marshal(map[string]string{
+				"title":   subject,
+				"content": content,
+				"text":    content,
+			})
+		}
+
 		resp, err := http.Post(cfg.WebhookURL, "application/json", bytes.NewBuffer(payload))
 		if err != nil {
 			log.Printf("Webhook 推送失败: %v", err)
 		} else {
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			log.Println("Webhook 推送成功")
+			log.Printf("Webhook 响应: %s", string(body)) // 输出响应结果方便排查
 		}
 	}
 }
