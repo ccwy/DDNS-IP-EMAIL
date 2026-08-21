@@ -226,8 +226,8 @@ func sendNotification(oldIP, currentIP string) {
 	subject := "🌐 公网 IP 变动提醒"
 	content := fmt.Sprintf(
 		"您的公网 IP 已发生变更！\n\n"+
-			"• 旧 IP 地址：%s\n"+
 			"• 新 IP 地址：%s\n"+
+			"• 旧 IP 地址：%s\n"+
 			"• 变更时间：%s",
 		oldIP, currentIP, time.Now().In(cstZone).Format("2006-01-02 15:04:05"),
 	)
@@ -316,11 +316,15 @@ func main() {
 					dataLock.Lock()
 					curIP := status.LastIP
 					dataLock.Unlock()
+					// 优先从文件或缓存中尝试读取上一次保存的 IP
+					oldIP := "未收录"
 					if curIP != "" {
-						go sendNotification("123.123.123.123 (模拟旧IP)", curIP+" (测试推送)")
-					} else {
-						go sendNotification("未知", "1.1.1.1 (测试推送)")
+						// 如果当前已经记录到了 IP，作为测试时的旧 IP 参照
+						oldIP = curIP
 					}
+
+					// 触发推送，传递实际的旧 IP 与当前 IP（附带测试标记）
+					go sendNotification(oldIP, curIP+" (测试推送)")
 				}
 			}
 			http.Redirect(w, r, "/", http.StatusSeeOther)
