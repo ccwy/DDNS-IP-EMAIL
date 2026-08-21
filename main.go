@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -16,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"encoding/base64"
 )
 
 // 北京时区 (UTC+8)
@@ -64,6 +64,7 @@ type Config struct {
 	SMTPPort        string `json:"smtp_port"`
 	SMTPUser        string `json:"smtp_user"`
 	SMTPPass        string `json:"smtp_pass"`
+	SenderName      string `json:"sender_name"` // 发件人名称
 	ToEmail         string `json:"to_email"`
 	WebhookURL      string `json:"webhook_url"`
 }
@@ -158,18 +159,26 @@ func getPublicIP() (string, int64, string, error) {
 	return "", 0, "", fmt.Errorf("所有接口查询失败, 最后错误: %v", lastErr)
 }
 
-func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) error {
+// ===== 纯 SSL 邮件发送（支持发件人名称与标题 RFC 2047 编码） =====
+func sendEmailSSL(smtpHost, smtpPort, user, pass, senderName, to, subject, content string) error {
 	addr := fmt.Sprintf("%s:%s", smtpHost, smtpPort)
 	host, _, _ := net.SplitHostPort(addr)
 
 	msgID := fmt.Sprintf("<%d.%d@%s>", time.Now().UnixNano(), os.Getpid(), host)
 	dateStr := time.Now().In(cstZone).Format(time.RFC1123Z)
 
-	// 对邮件标题进行 RFC 2047 UTF-8 Base64 编码，解决乱码问题
+	// 对邮件标题进行 RFC 2047 UTF-8 Base64 编码，解决中文和 Emoji 乱码问题
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
 
+	// 拼装发件人信息
+	fromHeader := fmt.Sprintf("<%s>", user)
+	if senderName != "" {
+		encodedSenderName := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(senderName)))
+		fromHeader = fmt.Sprintf("%s <%s>", encodedSenderName, user)
+	}
+
 	header := make(map[string]string)
-	header["From"] = fmt.Sprintf("<%s>", user)
+	header["From"] = fromHeader
 	header["To"] = fmt.Sprintf("<%s>", to)
 	header["Subject"] = encodedSubject
 	header["Date"] = dateStr
@@ -185,7 +194,6 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 
 	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
 	if err != nil {
-		// 190 行：修复为 fmt.Errorf
 		return fmt.Errorf("TLS 连接失败: %v", err)
 	}
 	defer conn.Close()
@@ -197,7 +205,6 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	defer client.Quit()
 
 	if err = client.Auth(smtp.PlainAuth("", user, pass, host)); err != nil {
-		// 201 行：修复为 fmt.Errorf
 		return fmt.Errorf("身份验证失败: %v", err)
 	}
 	if err = client.Mail(user); err != nil {
@@ -224,8 +231,7 @@ func sendNotification(oldIP, currentIP string) {
 	dataLock.Unlock()
 
 	subject := "🌐 公网 IP 变动提醒"
-	
-	// 调整结构：新 IP 放前面，旧 IP 放后面
+	// 新 IP 放前面，旧 IP 放后面
 	content := fmt.Sprintf(
 		"您的公网 IP 已发生变更！\n\n"+
 			"• 新 IP 地址：%s\n"+
@@ -236,7 +242,7 @@ func sendNotification(oldIP, currentIP string) {
 
 	if cfg.NotifyType == "email" && cfg.SMTPHost != "" {
 		log.Printf("正在通过 SSL 发送邮件至 %s...", cfg.ToEmail)
-		err := sendEmailSSL(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.ToEmail, subject, content)
+		err := sendEmailSSL(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SenderName, cfg.ToEmail, subject, content)
 		if err != nil {
 			log.Printf("邮件发送失败: %v", err)
 		} else {
@@ -246,12 +252,11 @@ func sendNotification(oldIP, currentIP string) {
 		log.Println("正在发送 Webhook 推送...")
 
 		var payload []byte
+		targetURL := cfg.WebhookURL
 
-		// 判断是否为 WxPusher 链接，自动适配其专属 JSON 格式
-		if strings.Contains(cfg.WebhookURL, "wxpusher.zjiecode.com") {
-			// 1. 尝试从 URL 路径中提取 appToken 和 uid
-			// URL 格式: https://wxpusher.zjiecode.com/api/send/message/AT_xxx/UID_xxx
-			parts := strings.Split(cfg.WebhookURL, "/")
+		// 自动适配 WxPusher 格式
+		if strings.Contains(targetURL, "wxpusher.zjiecode.com") {
+			parts := strings.Split(targetURL, "/")
 			var appToken, uid string
 			for _, part := range parts {
 				if strings.HasPrefix(part, "AT_") {
@@ -261,20 +266,16 @@ func sendNotification(oldIP, currentIP string) {
 				}
 			}
 
-			// 2. 构造 WxPusher 标准请求体
 			wxData := map[string]interface{}{
 				"appToken":    appToken,
 				"content":     content,
 				"summary":     subject,
-				"contentType": 1, // 1 表示文字，2 表示 HTML，3 表示 Markdown
+				"contentType": 1,
 				"uids":        []string{uid},
 			}
 			payload, _ = json.Marshal(wxData)
-
-			// 修正请求的目标地址为 WxPusher 标准 API
-			cfg.WebhookURL = "https://wxpusher.zjiecode.com/api/send/message"
+			targetURL = "https://wxpusher.zjiecode.com/api/send/message"
 		} else {
-			// 普通 Webhook 格式
 			payload, _ = json.Marshal(map[string]string{
 				"title":   subject,
 				"content": content,
@@ -282,13 +283,13 @@ func sendNotification(oldIP, currentIP string) {
 			})
 		}
 
-		resp, err := http.Post(cfg.WebhookURL, "application/json", bytes.NewBuffer(payload))
+		resp, err := http.Post(targetURL, "application/json", bytes.NewBuffer(payload))
 		if err != nil {
 			log.Printf("Webhook 推送失败: %v", err)
 		} else {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			log.Printf("Webhook 响应: %s", string(body)) // 输出响应结果方便排查
+			log.Printf("Webhook 响应: %s", string(body))
 		}
 	}
 }
@@ -346,6 +347,7 @@ func main() {
 			newCfg.SMTPPort = r.FormValue("smtp_port")
 			newCfg.SMTPUser = r.FormValue("smtp_user")
 			newCfg.SMTPPass = r.FormValue("smtp_pass")
+			newCfg.SenderName = r.FormValue("sender_name") // 获取表单中的发件人名称
 			newCfg.ToEmail = r.FormValue("to_email")
 			newCfg.WebhookURL = r.FormValue("webhook_url")
 			fmt.Sscanf(r.FormValue("interval_minutes"), "%d", &newCfg.IntervalMinutes)
@@ -356,14 +358,13 @@ func main() {
 					dataLock.Lock()
 					curIP := status.LastIP
 					dataLock.Unlock()
-					// 优先从文件或缓存中尝试读取上一次保存的 IP
+
+					// 取消模拟 IP，若不存在旧 IP 则设为未收录
 					oldIP := "未收录"
 					if curIP != "" {
-						// 如果当前已经记录到了 IP，作为测试时的旧 IP 参照
 						oldIP = curIP
 					}
 
-					// 触发推送，传递实际的旧 IP 与当前 IP（附带测试标记）
 					go sendNotification(oldIP, curIP+" (测试推送)")
 				}
 			}

@@ -48,7 +48,7 @@
             <div class="form-group">
                 <label>通知通道</label>
                 <select name="notify_type" id="notifyType" onchange="toggleFields()">
-                    <option value="webhook" {{if eq .Config.NotifyType "webhook"}}selected{{end}}>Webhook (Server酱/PushPlus/Telegram)</option>
+                    <option value="webhook" {{if eq .Config.NotifyType "webhook"}}selected{{end}}>Webhook (Server酱/PushPlus/WxPusher)</option>
                     <option value="email" {{if eq .Config.NotifyType "email"}}selected{{end}}>SMTP 邮件 (SSL 端口)</option>
                 </select>
             </div>
@@ -56,7 +56,7 @@
             <div id="webhookSection">
                 <div class="form-group">
                     <label>Webhook URL</label>
-                    <input type="url" name="webhook_url" value="{{.Config.WebhookURL}}" placeholder="https://www.pushplus.plus/send">
+                    <input type="url" name="webhook_url" value="{{.Config.WebhookURL}}" placeholder="https://wxpusher.zjiecode.com/api/send/message/AT_xxx/UID_xxx">
                 </div>
             </div>
 
@@ -64,6 +64,7 @@
                 <div class="form-group"><label>SMTP 服务器</label><input type="text" name="smtp_host" value="{{.Config.SMTPHost}}" placeholder="smtp.qq.com"></div>
                 <div class="form-group"><label>SSL 端口</label><input type="text" name="smtp_port" value="{{.Config.SMTPPort}}" placeholder="465"></div>
                 <div class="form-group"><label>发件邮箱账号</label><input type="text" name="smtp_user" value="{{.Config.SMTPUser}}"></div>
+                <div class="form-group"><label>发件人名称 (显示名称)</label><input type="text" name="sender_name" value="{{.Config.SenderName}}" placeholder="例如: IP监控助手"></div>
                 <div class="form-group"><label>发件密码/授权码</label><input type="password" name="smtp_pass" value="{{.Config.SMTPPass}}"></div>
                 <div class="form-group"><label>接收邮箱</label><input type="email" name="to_email" value="{{.Config.ToEmail}}"></div>
             </div>
