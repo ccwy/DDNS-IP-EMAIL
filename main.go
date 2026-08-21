@@ -207,7 +207,6 @@ func getPublicIP() (string, error) {
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = err
-			// 将具体错误打印到控制台，方便排查是 DNS 还是 TCP 超时
 			log.Printf("请求 %s 失败: %v", url, err)
 			continue
 		}
@@ -223,7 +222,8 @@ func getPublicIP() (string, error) {
 		}
 	}
 
-	return "", fmt.Sprintf("接口均失败, 最后一次错误: %v", lastErr)
+	// 修复这里的返回值：使用 fmt.Errorf 生成标准的 error 类型
+	return "", fmt.Errorf("接口均失败, 最后一次错误: %v", lastErr)
 }
 
 func ipCheckerWorker() {
