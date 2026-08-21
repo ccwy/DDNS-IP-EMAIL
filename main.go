@@ -170,16 +170,46 @@ func sendNotification(currentIP string) {
 }
 
 func getPublicIP() (string, error) {
-	resp, err := http.Get("https://api.ipify.org")
-	if err != nil {
-		resp, err = http.Get("https://ddns.oray.com/checkip")
+	// 创建带 5 秒硬性超时的 HTTP 客户端
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	// 依次尝试多个国内外极速 IP 检测接口
+	endpoints := []string{
+		"https://api.ipify.org",
+		"https://myip.ipip.net/s",
+		"https://api.ip.sb/ip",
+		"https://ddns.oray.com/checkip",
+	}
+
+	for _, url := range endpoints {
+		resp, err := client.Get(url)
 		if err != nil {
-			return "", err
+			continue // 当前接口超时或报错，自动尝试下一个
+		}
+		
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		
+		if err == nil {
+			// 提取 IP 字符串
+			ip := strings.TrimSpace(string(body))
+			// 过滤 HTML 标签（针对部分返回 HTML 网页的接口）
+			if strings.Contains(ip, "IP") {
+				for _, part := range strings.Fields(ip) {
+					if net.ParseIP(part) != nil {
+						return part, nil
+					}
+				}
+			}
+			if net.ParseIP(ip) != nil {
+				return ip, nil
+			}
 		}
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return string(bytes.TrimSpace(body)), nil
+
+	return "", fmt.Errorf("所有公网 IP 查询接口请求均超时或失败")
 }
 
 func ipCheckerWorker() {
@@ -257,6 +287,6 @@ func main() {
 		json.NewEncoder(w).Encode(logBuf.GetLogs())
 	})
 
-	log.Println("Web 界面运行在 :8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("Web 界面运行在 :49809")
+	log.Fatal(http.ListenAndServe(":49809", nil))
 }

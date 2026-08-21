@@ -12,7 +12,7 @@ WORKDIR /app
 COPY --from=builder /app/ddns-notifier .
 COPY templates/ ./templates/
 
-EXPOSE 8080
+EXPOSE 49809
 VOLUME ["/data"]
 
 CMD ["./ddns-notifier"]
