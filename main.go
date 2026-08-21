@@ -158,8 +158,6 @@ func getPublicIP() (string, int64, string, error) {
 	return "", 0, "", fmt.Errorf("所有接口查询失败, 最后错误: %v", lastErr)
 }
 
-// 导入 encoding/base64 包（请确保 main.go 开头的 import 包含了 "encoding/base64"）
-
 func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) error {
 	addr := fmt.Sprintf("%s:%s", smtpHost, smtpPort)
 	host, _, _ := net.SplitHostPort(addr)
@@ -167,13 +165,13 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	msgID := fmt.Sprintf("<%d.%d@%s>", time.Now().UnixNano(), os.Getpid(), host)
 	dateStr := time.Now().In(cstZone).Format(time.RFC1123Z)
 
-	// 对邮件标题进行 RFC 2047 UTF-8 Base64 编码，解决中文和 Emoji 乱码问题
+	// 对邮件标题进行 RFC 2047 UTF-8 Base64 编码，解决乱码问题
 	encodedSubject := fmt.Sprintf("=?UTF-8?B?%s?=", base64.StdEncoding.EncodeToString([]byte(subject)))
 
 	header := make(map[string]string)
 	header["From"] = fmt.Sprintf("<%s>", user)
 	header["To"] = fmt.Sprintf("<%s>", to)
-	header["Subject"] = encodedSubject // 使用编码后的标题
+	header["Subject"] = encodedSubject
 	header["Date"] = dateStr
 	header["Message-ID"] = msgID
 	header["MIME-Version"] = "1.0"
@@ -187,7 +185,8 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 
 	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
 	if err != nil {
-		return fmt.Sprintf("TLS 连接失败: %v", err)
+		// 190 行：修复为 fmt.Errorf
+		return fmt.Errorf("TLS 连接失败: %v", err)
 	}
 	defer conn.Close()
 
@@ -198,7 +197,8 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	defer client.Quit()
 
 	if err = client.Auth(smtp.PlainAuth("", user, pass, host)); err != nil {
-		return fmt.Sprintf("身份验证失败: %v", err)
+		// 201 行：修复为 fmt.Errorf
+		return fmt.Errorf("身份验证失败: %v", err)
 	}
 	if err = client.Mail(user); err != nil {
 		return err
