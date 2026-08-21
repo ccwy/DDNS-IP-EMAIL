@@ -90,7 +90,7 @@ func loadConfig() {
 	if err == nil {
 		json.Unmarshal(file, &config)
 	} else {
-		config = Config{IntervalMinutes: 10, NotifyType: "email"}
+		config = Config{IntervalMinutes: 2, NotifyType: "email"}
 	}
 }
 
