@@ -100,10 +100,18 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	addr := fmt.Sprintf("%s:%s", smtpHost, smtpPort)
 	host, _, _ := net.SplitHostPort(addr)
 
+	// 1. 生成唯一 Message-ID 和标准 RFC1123Z 时间戳，防止被识别为垃圾邮件
+	msgID := fmt.Sprintf("<%d.%d@%s>", time.Now().UnixNano(), os.Getpid(), host)
+	dateStr := time.Now().Format(time.RFC1123Z)
+
+	// 2. 严格按 RFC 822 格式构建 Header
 	header := make(map[string]string)
-	header["From"] = user
-	header["To"] = to
+	header["From"] = fmt.Sprintf("<%s>", user)
+	header["To"] = fmt.Sprintf("<%s>", to)
 	header["Subject"] = subject
+	header["Date"] = dateStr
+	header["Message-ID"] = msgID
+	header["MIME-Version"] = "1.0"
 	header["Content-Type"] = "text/plain; charset=UTF-8"
 
 	message := ""
@@ -112,7 +120,11 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	}
 	message += "\r\n" + content
 
-	conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: host})
+	// 3. 建立 SSL 连接
+	conn, err := tls.Dial("tcp", addr, &tls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: false,
+	})
 	if err != nil {
 		return fmt.Errorf("TLS 连接失败: %v", err)
 	}
@@ -133,11 +145,16 @@ func sendEmailSSL(smtpHost, smtpPort, user, pass, to, subject, content string) e
 	if err = client.Rcpt(to); err != nil {
 		return err
 	}
+
 	w, err := client.Data()
 	if err != nil {
 		return err
 	}
-	w.Write([]byte(message))
+	_, err = w.Write([]byte(message))
+	if err != nil {
+		return err
+	}
+
 	return w.Close()
 }
 
