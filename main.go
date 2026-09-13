@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/smtp"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -276,11 +277,12 @@ func sendNotification(oldIP, currentIP string) {
 			payload, _ = json.Marshal(wxData)
 			targetURL = "https://wxpusher.zjiecode.com/api/send/message"
 		} else if strings.Contains(targetURL, "SYNO.Chat.External") {
-			// 自动适配群晖 Chat Webhook 格式
+			// 群晖 Chat Webhook: payload 参数包含 JSON 字符串
 			synoData := map[string]string{
 				"text": content,
 			}
-			payload, _ = json.Marshal(synoData)
+			synoJSON, _ := json.Marshal(synoData)
+			payload = []byte("payload=" + url.QueryEscape(string(synoJSON)))
 		} else {
 			payload, _ = json.Marshal(map[string]string{
 				"title":   subject,
@@ -289,7 +291,11 @@ func sendNotification(oldIP, currentIP string) {
 			})
 		}
 
-		resp, err := http.Post(targetURL, "application/json", bytes.NewBuffer(payload))
+		contentType := "application/json"
+		if strings.Contains(targetURL, "SYNO.Chat.External") {
+			contentType = "application/x-www-form-urlencoded"
+		}
+		resp, err := http.Post(targetURL, contentType, bytes.NewBuffer(payload))
 		if err != nil {
 			log.Printf("Webhook 推送失败: %v", err)
 		} else {
