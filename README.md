@@ -1,8 +1,10 @@
 # DDNS-IP-EMAIL
 
-适用于群晖DDNS IP变动通过SMTP邮件提醒，家庭宽带动态公网IPV4每隔段时间就会自动更新，更新了自己也不知道，就使用GO语言写个轻量docker用于通知用户IP变动
+适用于群晖DDNS IP变动通过SMTP邮件,群晖Chat Webhook,也支持通用Webhook，多种方式提醒，家庭宽带动态公网IPV4每隔段时间就会自动更新，更新了自己也不知道，就使用GO语言写个轻量docker用于通知用户IP变动
 
 使用很简单，配置SMTP发件服务，填入收件邮箱，保存即可。后台会自动检测并发送邮件通知你。
+
+群晖Chat Webhook使用更简单，打开群晖chat，点开头像，点击整合，点击传入的Webhook，选择一个频道，然后复制URL，填入到DDNS IP 监控面板的Webhook URL，点击保存并测试就可以看到效果了
 
 使用方法：
 
