@@ -275,6 +275,12 @@ func sendNotification(oldIP, currentIP string) {
 			}
 			payload, _ = json.Marshal(wxData)
 			targetURL = "https://wxpusher.zjiecode.com/api/send/message"
+		} else if strings.Contains(targetURL, "SYNO.Chat.External") {
+			// 自动适配群晖 Chat Webhook 格式
+			synoData := map[string]string{
+				"text": content,
+			}
+			payload, _ = json.Marshal(synoData)
 		} else {
 			payload, _ = json.Marshal(map[string]string{
 				"title":   subject,

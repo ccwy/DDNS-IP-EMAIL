@@ -49,14 +49,15 @@
                 <label>通知通道</label>
                 <select name="notify_type" id="notifyType" onchange="toggleFields()">
 					<option value="email" {{if eq .Config.NotifyType "email"}}selected{{end}}>SMTP 邮件 (SSL 端口)</option>
-                    <option value="webhook" {{if eq .Config.NotifyType "webhook"}}selected{{end}}>Webhook (Server酱/PushPlus/WxPusher)</option>
+                    <option value="webhook" {{if eq .Config.NotifyType "webhook"}}selected{{end}}>Webhook (Server酱/PushPlus/WxPusher/群晖Chat)</option>
                 </select>
             </div>
 
             <div id="webhookSection">
                 <div class="form-group">
                     <label>Webhook URL</label>
-                    <input type="url" name="webhook_url" value="{{.Config.WebhookURL}}" placeholder="https://wxpusher.zjiecode.com/api/send/message/AT_xxx/UID_xxx">
+                    <input type="url" name="webhook_url" value="{{.Config.WebhookURL}}" placeholder="WxPusher/Server酱/PushPlus/群晖Chat URL">
+                    <small style="color:#888; font-size:12px;">群晖Chat示例: http://ds224:39443/webapi/entry.cgi?api=SYNO.Chat.External&amp;method=incoming&amp;version=2&amp;token=xxx</small>
                 </div>
             </div>
 
