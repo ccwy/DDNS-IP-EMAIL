@@ -295,7 +295,17 @@ func sendNotification(oldIP, currentIP string) {
 		if strings.Contains(targetURL, "SYNO.Chat.External") {
 			contentType = "application/x-www-form-urlencoded"
 		}
-		resp, err := http.Post(targetURL, contentType, bytes.NewBuffer(payload))
+		webhookClient := &http.Client{
+			Timeout: 10 * time.Second,
+			Transport: &http.Transport{
+				DialContext: (&net.Dialer{
+					Timeout: 5 * time.Second,
+				}).DialContext,
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+				ResponseHeaderTimeout: 5 * time.Second,
+			},
+		}
+		resp, err := webhookClient.Post(targetURL, contentType, bytes.NewBuffer(payload))
 		if err != nil {
 			log.Printf("Webhook 推送失败: %v", err)
 		} else {
