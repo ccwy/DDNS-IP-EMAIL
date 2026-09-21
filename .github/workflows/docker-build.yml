@@ -1,9 +1,13 @@
-name: Build Synology Docker Image
+name: Build and Release
 
 on:
   push:
-    branches: [ "main" ]
+    tags:
+      - "v*"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -21,10 +25,25 @@ jobs:
 
       - name: Export Image to TAR
         run: |
-          docker save ddns-notifier:latest -o ddns-notifier-amd64.tar
+          docker save ddns-notifier:latest -o ddns-notifier-amd64-${{ github.ref_name }}.tar
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v7
+      - name: Compress Image
+        run: |
+          gzip ddns-notifier-amd64-${{ github.ref_name }}.tar
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: ddns-notifier-ds224
-          path: ddns-notifier-amd64.tar
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            DDNS IP 变动通知工具 ${{ github.ref_name }}
+
+            ## 使用方法
+            1. 下载 `ddns-notifier-amd64-${{ github.ref_name }}.tar.gz`
+            2. 在群晖 Container Manager 中导入镜像
+            3. 运行容器，网络模式选择 **host**
+            4. 配置 `/data` 存储映射
+            5. 访问 `http://<NAS-IP>:49809` 进行配置
+          files: |
+            ddns-notifier-amd64-${{ github.ref_name }}.tar.gz
