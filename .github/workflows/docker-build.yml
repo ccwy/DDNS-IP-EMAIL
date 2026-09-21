@@ -12,7 +12,7 @@ permissions:
 jobs:
   build:
     name: 🐳 Docker 构建与发布
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: 📥 检出代码
