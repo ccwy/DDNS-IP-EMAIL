@@ -2,7 +2,7 @@ name: 自动化构建发布
 
 on:
   push:
-    branches: [ main]
+    branches: [ main ]
     tags: [ 'v*' ]
   workflow_dispatch:
 
@@ -60,21 +60,13 @@ jobs:
         run: |
           mv ddns-notifier-amd64.tar "ddns-notifier-amd64-${{ steps.version.outputs.tag }}.tar"
 
-      - name: 🗜️ 压缩镜像
-        run: |
-          if [ "${{ steps.version.outputs.has_version }}" = "true" ]; then
-            gzip "ddns-notifier-amd64-${{ steps.version.outputs.tag }}.tar"
-          else
-            gzip ddns-notifier-amd64.tar
-          fi
-
-      - name: 📤 上传构建产物
+      - name:  上传构建产物
         uses: actions/upload-artifact@v7
         with:
           name: ddns-notifier-docker
           path: |
-            ddns-notifier-amd64-*.tar.gz
-            ddns-notifier-amd64.tar.gz
+            ddns-notifier-amd64-*.tar
+            ddns-notifier-amd64.tar
           retention-days: 30
 
       - name: 🚀 发布到 Release
@@ -87,12 +79,12 @@ jobs:
             DDNS IP 变动通知工具 ${{ steps.version.outputs.tag }}
 
             ## 使用方法
-            1. 下载 `ddns-notifier-amd64-${{ steps.version.outputs.tag }}.tar.gz`
-            2. 在群晖 Container Manager 中导入镜像，或使用命令: `docker load -i ddns-notifier-amd64-${{ steps.version.outputs.tag }}.tar.gz`
+            1. 下载 `ddns-notifier-amd64-${{ steps.version.outputs.tag }}.tar`
+            2. 在群晖 Container Manager 中导入镜像，或使用命令: `docker load -i ddns-notifier-amd64-${{ steps.version.outputs.tag }}.tar`
             3. 运行容器，网络模式选择 **host**
             4. 配置 `/data` 存储映射
             5. 访问 `http://<NAS-IP>:49809` 进行配置
           files: |
-            ddns-notifier-amd64-*.tar.gz
+            ddns-notifier-amd64-*.tar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
