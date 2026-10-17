@@ -781,7 +781,7 @@ func main() {
 		}
 	}()
 
-	log.Println("Web 界面运行在 :49809")
+	log.Println("Web 界面已启动，请通过浏览器访问 49809 端口")
 	// 全局强制会话级 Cookie：包裹 DefaultServeMux，一处覆盖所有现有及未来路由
 	log.Fatal(http.ListenAndServe(":49809", enforceSessionCookies(http.DefaultServeMux)))
 }
