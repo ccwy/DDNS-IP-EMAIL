@@ -23,11 +23,28 @@
         .btn-secondary { background: #6c757d; color: white; }
         
         .log-container { background: #1e1e1e; color: #00ff66; padding: 15px; border-radius: 8px; font-family: "Courier New", Courier, monospace; font-size: 12px; height: 180px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+
+        /* 标题栏布局与修改密码按钮 */
+        .page-header { display: flex; justify-content: space-between; align-items: center; }
+        .btn-change-pwd { flex: none; background: #007bff; color: white; padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px; }
+        .btn-change-pwd:hover { background: #0069d9; }
+
+        /* 修改密码弹窗 */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 1000; justify-content: center; align-items: center; }
+        .modal-overlay.show { display: flex; }
+        .modal-card { background: white; border-radius: 12px; padding: 25px; width: 90%; max-width: 400px; box-shadow: 0 8px 30px rgba(0,0,0,0.15); }
+        .modal-card h3 { margin-top: 0; color: #333; }
+        .modal-msg { display: none; margin-top: 5px; margin-bottom: 10px; font-size: 13px; padding: 8px 12px; border-radius: 6px; }
+        .modal-msg.error { display: block; background: #f8d7da; color: #721c24; }
+        .modal-msg.success { display: block; background: #d4edda; color: #155724; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>🌐 DDNS IP 监控面板</h2>
+        <div class="page-header">
+            <h2>🌐 DDNS IP 监控面板</h2>
+            <button type="button" class="btn-change-pwd" onclick="openPwdModal()">修改账号密码</button>
+        </div>
         
         <div class="status-grid">
             <div class="status-box">
@@ -44,6 +61,11 @@
             <div class="form-group">
                 <label>检测间隔 (分钟)</label>
                 <input type="number" name="interval_minutes" value="{{.Config.IntervalMinutes}}" min="1" required>
+            </div>
+            <div class="form-group">
+                <label>登录有效期 (小时)</label>
+                <input type="number" name="login_expire_hours" value="{{.Config.LoginExpireHours}}" min="1" required>
+                <small style="color:#888; font-size:12px;">关闭浏览器即登出；窗口未关闭时超过该时长无操作将自动登出</small>
             </div>
             <div class="form-group">
                 <label>通知通道</label>
@@ -82,6 +104,34 @@
         <div class="log-container" id="logBox">加载日志中...</div>
     </div>
 
+    <!-- 修改账号密码弹窗 -->
+    <div class="modal-overlay" id="pwdModal">
+        <div class="modal-card">
+            <h3>修改账号密码</h3>
+            <div class="form-group">
+                <label>当前密码</label>
+                <input type="password" id="curPwd" placeholder="请输入当前密码">
+            </div>
+            <div class="form-group">
+                <label>新账号</label>
+                <input type="text" id="newUser" placeholder="请输入新账号">
+            </div>
+            <div class="form-group">
+                <label>新密码</label>
+                <input type="password" id="newPwd" placeholder="请输入新密码">
+            </div>
+            <div class="form-group">
+                <label>确认新密码</label>
+                <input type="password" id="confirmPwd" placeholder="请再次输入新密码">
+            </div>
+            <div class="modal-msg" id="pwdMsg"></div>
+            <div class="btn-group">
+                <button type="button" class="btn-primary" onclick="submitChangePwd()">确认修改</button>
+                <button type="button" class="btn-secondary" onclick="closePwdModal()">取消</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         function toggleFields() {
             var type = document.getElementById("notifyType").value;
@@ -106,6 +156,67 @@
 
         fetchLogs();
         setInterval(fetchLogs, 3000);
+
+        // ===== 修改账号密码弹窗 =====
+        function openPwdModal() {
+            document.getElementById('curPwd').value = '';
+            document.getElementById('newUser').value = '';
+            document.getElementById('newPwd').value = '';
+            document.getElementById('confirmPwd').value = '';
+            showPwdMsg('', '');
+            document.getElementById('pwdModal').classList.add('show');
+        }
+
+        function closePwdModal() {
+            document.getElementById('pwdModal').classList.remove('show');
+        }
+
+        // 点击遮罩层关闭弹窗
+        document.getElementById('pwdModal').addEventListener('click', function(e) {
+            if (e.target === this) closePwdModal();
+        });
+
+        function showPwdMsg(msg, type) {
+            var el = document.getElementById('pwdMsg');
+            if (!msg) {
+                el.className = 'modal-msg';
+                el.textContent = '';
+                return;
+            }
+            el.className = 'modal-msg ' + type;
+            el.textContent = msg;
+        }
+
+        function submitChangePwd() {
+            var curPwd = document.getElementById('curPwd').value.trim();
+            var newUser = document.getElementById('newUser').value.trim();
+            var newPwd = document.getElementById('newPwd').value.trim();
+            var confirmPwd = document.getElementById('confirmPwd').value.trim();
+
+            if (!curPwd) { showPwdMsg('请输入当前密码', 'error'); return; }
+            if (!newUser) { showPwdMsg('请输入新账号', 'error'); return; }
+            if (!newPwd) { showPwdMsg('请输入新密码', 'error'); return; }
+            if (newPwd !== confirmPwd) { showPwdMsg('两次输入的新密码不一致', 'error'); return; }
+
+            fetch('/api/change-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ current_password: curPwd, new_user: newUser, new_password: newPwd })
+            })
+            .then(function(res) { return res.json(); })
+            .then(function(data) {
+                if (data.success) {
+                    closePwdModal();
+                    alert(data.message || '修改成功，请重新登录');
+                    window.location.href = '/logout';
+                } else {
+                    showPwdMsg(data.message || '修改失败', 'error');
+                }
+            })
+            .catch(function() {
+                showPwdMsg('请求失败，请稍后重试', 'error');
+            });
+        }
     </script>
 </body>
 </html>

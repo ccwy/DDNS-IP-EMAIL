@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - DDNS IP 监控面板</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f9; margin: 0; padding: 20px; display: flex; justify-content: center; align-items: center; min-height: 100vh; box-sizing: border-box; }
+        .card { width: 100%; max-width: 380px; background: white; padding: 35px 30px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); }
+        h2 { margin-top: 0; margin-bottom: 25px; color: #333; text-align: center; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; color: #666; font-size: 14px; }
+        input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 6px; box-sizing: border-box; font-size: 14px; }
+        input:focus { outline: none; border-color: #007bff; }
+        button { width: 100%; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; background: #007bff; color: white; font-size: 15px; margin-top: 10px; }
+        button:hover { background: #0069d9; }
+        .error { background: #f8d7da; border: 1px solid #f5c6cb; color: #721c24; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 14px; text-align: center; }
+        .hint { text-align: center; color: #888; font-size: 12px; margin-top: 18px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🔐 登录</h2>
+        {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+        <form action="/login" method="POST">
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" name="username" required autofocus>
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" name="password" required>
+            </div>
+            <button type="submit">登 录</button>
+        </form>
+        {{if .IsDefault}}<div class="hint">默认账号密码：admin / admin<br>登录后请在配置中修改</div>{{end}}
+    </div>
+</body>
+</html>

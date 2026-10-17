@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -68,6 +70,9 @@ type Config struct {
 	SenderName      string `json:"sender_name"` // 发件人名称
 	ToEmail         string `json:"to_email"`
 	WebhookURL      string `json:"webhook_url"`
+	AuthUser        string `json:"auth_user"` // 登录账号
+	AuthPass         string `json:"auth_pass"`          // 登录密码
+	LoginExpireHours int    `json:"login_expire_hours"` // 登录有效期(小时)
 }
 
 type Status struct {
@@ -93,15 +98,258 @@ func loadConfig() {
 	} else {
 		config = Config{IntervalMinutes: 2, NotifyType: "email"}
 	}
+	// 鉴权字段为空时设置默认值并立即持久化
+	changed := false
+	if config.AuthUser == "" {
+		config.AuthUser = "admin"
+		changed = true
+	}
+	if config.AuthPass == "" {
+		config.AuthPass = "admin"
+		changed = true
+	}
+	// 登录有效期缺失或非法(<=0)时设默认 24 小时，并随默认配置持久化
+	if config.LoginExpireHours <= 0 {
+		config.LoginExpireHours = 24
+		changed = true
+	}
+	if changed {
+		saveConfigToFile(config)
+	}
+}
+
+// saveConfigToFile 将配置写入文件（调用方需自行持有 dataLock，避免重复加锁死锁）
+func saveConfigToFile(cfg Config) error {
+	data, _ := json.MarshalIndent(cfg, "", "  ")
+	os.MkdirAll("/data", 0755)
+	return os.WriteFile(configFile, data, 0644)
 }
 
 func saveConfig(newCfg Config) error {
 	dataLock.Lock()
 	defer dataLock.Unlock()
 	config = newCfg
-	data, _ := json.MarshalIndent(config, "", "  ")
-	os.MkdirAll("/data", 0755)
-	return os.WriteFile(configFile, data, 0644)
+	return saveConfigToFile(config)
+}
+
+// ===== Session 管理与登录鉴权 =====
+var (
+	sessions   = make(map[string]time.Time) // token -> 过期时间
+	sessionMux sync.Mutex
+)
+
+// getSessionTimeout 读取配置中的登录有效期（持有 dataLock 保护，避免与 saveConfig 并发竞争）
+// 配置缺失或非法(<=0)时兜底为 24 小时
+func getSessionTimeout() time.Duration {
+	dataLock.Lock()
+	hours := config.LoginExpireHours
+	dataLock.Unlock()
+	if hours <= 0 {
+		hours = 24
+	}
+	return time.Duration(hours) * time.Hour
+}
+
+// createSession 生成 32 字节随机 hex token
+// Cookie 为会话级（不设 MaxAge，关闭浏览器即登出）；未关闭窗口时由服务端 session 按配置有效期自动过期（滑动续期）
+func createSession() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// 极少发生，使用时间戳兜底
+		return fmt.Sprintf("%x", time.Now().UnixNano())
+	}
+	token := hex.EncodeToString(b)
+	sessionMux.Lock()
+	sessions[token] = time.Now().Add(getSessionTimeout())
+	sessionMux.Unlock()
+	return token
+}
+
+// isValidSession 校验 session 是否存在且未过期，过期则删除；校验通过时滑动续期
+func isValidSession(token string) bool {
+	if token == "" {
+		return false
+	}
+	sessionMux.Lock()
+	defer sessionMux.Unlock()
+	expiry, ok := sessions[token]
+	if !ok {
+		return false
+	}
+	if time.Now().After(expiry) {
+		delete(sessions, token)
+		return false
+	}
+	// 滑动续期：校验通过即刷新闲置过期时间，浏览器保持打开期间不会过期
+	sessions[token] = time.Now().Add(getSessionTimeout())
+	return true
+}
+
+// deleteSession 删除指定 session
+func deleteSession(token string) {
+	sessionMux.Lock()
+	delete(sessions, token)
+	sessionMux.Unlock()
+}
+
+// cleanExpiredSessions 清理所有过期 session
+func cleanExpiredSessions() {
+	sessionMux.Lock()
+	now := time.Now()
+	for token, expiry := range sessions {
+		if now.After(expiry) {
+			delete(sessions, token)
+		}
+	}
+	sessionMux.Unlock()
+}
+
+// requireAuth 鉴权中间件：未登录时页面 302 跳转 /login，API 返回 401 JSON
+func requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		cookie, err := r.Cookie("session_token")
+		if err != nil || !isValidSession(cookie.Value) {
+			if r.URL.Path == "/api/logs" {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{"error": "未登录"})
+				return
+			}
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// loginPageData 登录页模板数据
+type loginPageData struct {
+	Error     string
+	IsDefault bool
+}
+
+// renderLogin 渲染登录页
+func renderLogin(w http.ResponseWriter, data loginPageData) {
+	tmpl, err := template.ParseFiles("templates/login.html")
+	if err != nil {
+		http.Error(w, "登录页加载失败", http.StatusInternalServerError)
+		return
+	}
+	if data.Error != "" {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+	tmpl.Execute(w, data)
+}
+
+// loginHandler 处理 GET/POST /login
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		// 已登录则直接进入面板
+		if cookie, err := r.Cookie("session_token"); err == nil && isValidSession(cookie.Value) {
+			http.Redirect(w, r, "/", http.StatusFound)
+			return
+		}
+		dataLock.Lock()
+		isDefault := config.AuthUser == "admin" && config.AuthPass == "admin"
+		dataLock.Unlock()
+		renderLogin(w, loginPageData{IsDefault: isDefault})
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		r.ParseForm()
+		username := r.FormValue("username")
+		password := r.FormValue("password")
+
+		dataLock.Lock()
+		authUser, authPass := config.AuthUser, config.AuthPass
+		dataLock.Unlock()
+
+		if username == authUser && password == authPass {
+			token := createSession()
+			// 会话级 Cookie：不设 MaxAge，关闭浏览器即登出；未关闭时由服务端 session 按配置有效期自动过期
+			http.SetCookie(w, &http.Cookie{
+				Name:     "session_token",
+				Value:    token,
+				Path:     "/",
+				HttpOnly: true,
+			})
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+			return
+		}
+
+		renderLogin(w, loginPageData{
+			Error:     "账号或密码错误",
+			IsDefault: authUser == "admin" && authPass == "admin",
+		})
+		return
+	}
+
+	http.Error(w, "方法不允许", http.StatusMethodNotAllowed)
+}
+
+// logoutHandler 处理 GET /logout：删除 session、清除 cookie、跳转登录页
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie("session_token"); err == nil {
+		deleteSession(cookie.Value)
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:   "session_token",
+		Value:  "",
+		Path:   "/",
+		MaxAge: -1,
+	})
+	http.Redirect(w, r, "/login", http.StatusFound)
+}
+
+// changePasswordHandler 处理 POST /api/change-password：修改登录账号密码
+// 校验当前密码正确后，仅更新 AuthUser/AuthPass 并持久化，不影响其他配置
+func changePasswordHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "方法不允许"})
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"current_password"`
+		NewUser         string `json:"new_user"`
+		NewPassword     string `json:"new_password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "请求格式错误"})
+		return
+	}
+
+	dataLock.Lock()
+	// 校验当前密码，防止他人篡改
+	if config.AuthPass != req.CurrentPassword {
+		dataLock.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "当前密码错误"})
+		return
+	}
+	newUser := strings.TrimSpace(req.NewUser)
+	newPass := strings.TrimSpace(req.NewPassword)
+	if newUser == "" || newPass == "" {
+		dataLock.Unlock()
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "新账号和新密码不能为空"})
+		return
+	}
+	// 只更新鉴权字段，保留其他配置
+	config.AuthUser = newUser
+	config.AuthPass = newPass
+	err := saveConfigToFile(config)
+	dataLock.Unlock()
+
+	if err != nil {
+		log.Printf("修改账号密码失败: %v", err)
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": false, "message": "保存配置失败"})
+		return
+	}
+	log.Printf("登录账号密码已修改（新账号: %s）", newUser)
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "修改成功，请重新登录"})
 }
 
 // ===== 带耗时统计的 IP 查询函数 =====
@@ -360,7 +608,7 @@ func main() {
 	log.Println("服务初始化完成，开始后台监控...")
 	go ipCheckerWorker()
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			r.ParseForm()
 			var newCfg Config
@@ -373,6 +621,26 @@ func main() {
 			newCfg.ToEmail = r.FormValue("to_email")
 			newCfg.WebhookURL = r.FormValue("webhook_url")
 			fmt.Sscanf(r.FormValue("interval_minutes"), "%d", &newCfg.IntervalMinutes)
+
+			// 保留登录鉴权配置：表单提交了新值则更新，否则沿用当前值，避免保存配置时被清空
+			dataLock.Lock()
+			curAuthUser, curAuthPass := config.AuthUser, config.AuthPass
+			curLoginExpire := config.LoginExpireHours
+			dataLock.Unlock()
+			if newCfg.AuthUser = r.FormValue("auth_user"); newCfg.AuthUser == "" {
+				newCfg.AuthUser = curAuthUser
+			}
+			if newCfg.AuthPass = r.FormValue("auth_pass"); newCfg.AuthPass == "" {
+				newCfg.AuthPass = curAuthPass
+			}
+			// 登录有效期：表单提交了合法值(>0)则更新，解析失败或未提交时沿用当前值
+			var formExpire int
+			fmt.Sscanf(r.FormValue("login_expire_hours"), "%d", &formExpire)
+			if formExpire > 0 {
+				newCfg.LoginExpireHours = formExpire
+			} else {
+				newCfg.LoginExpireHours = curLoginExpire
+			}
 
 			if err := saveConfig(newCfg); err == nil {
 				log.Println("配置已更新并保存")
@@ -402,12 +670,25 @@ func main() {
 		}{Config: config, Status: status}
 		dataLock.Unlock()
 		tmpl.Execute(w, data)
-	})
+	}))
 
-	http.HandleFunc("/api/logs", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/logs", requireAuth(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(logBuf.GetLogs())
-	})
+	}))
+
+	http.HandleFunc("/api/change-password", requireAuth(changePasswordHandler))
+
+	http.HandleFunc("/login", loginHandler)
+	http.HandleFunc("/logout", logoutHandler)
+
+	// 定期清理过期 session
+	go func() {
+		ticker := time.NewTicker(time.Hour)
+		for range ticker.C {
+			cleanExpiredSessions()
+		}
+	}()
 
 	log.Println("Web 界面运行在 :49809")
 	log.Fatal(http.ListenAndServe(":49809", nil))

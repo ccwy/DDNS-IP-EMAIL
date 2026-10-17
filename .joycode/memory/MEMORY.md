@@ -1,0 +1,1 @@
+- [DDNS-IP-EMAIL 构建环境](project_build_env.md) — 本机无 Go/Docker，编译验证依赖 Docker/CI；项目用 Dockerfile (golang:1.22-alpine) 构建
