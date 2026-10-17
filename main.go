@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/rand"
 	"crypto/tls"
@@ -220,6 +221,96 @@ func requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// ===== 全局会话级 Cookie 强制中间件 =====
+
+// 预编译清洗正则（包级复用，避免每次请求重复编译）：
+//   maxAgePositiveRe：匹配 Max-Age=<正整数>，不匹配 Max-Age=0，从而保留删除 Cookie 的语义
+//   expiresRe：匹配 Expires=... 属性（属性值中不含分号）
+var (
+	maxAgePositiveRe = regexp.MustCompile(`Max-Age=[1-9]\d*`)
+	expiresRe        = regexp.MustCompile(`Expires=[^;]*`)
+)
+
+// sessionCookieWriter 包装 http.ResponseWriter，在首次真正写出响应前清洗 Set-Cookie 响应头，
+// 强制所有下发 Cookie 为会话级：剥离 Max-Age(>0) 与 Expires 属性，保留 Max-Age=0
+// （删除 Cookie 的语义，登出时需要，不能破坏）。防范未来代码、中间件或插件意外设置持久化 Cookie。
+type sessionCookieWriter struct {
+	http.ResponseWriter
+	once sync.Once // 保证整个响应周期内只清洗一次 Set-Cookie 头
+}
+
+// stripPersistentAttrs 清洗单个 cookie 字符串：
+// 移除 Max-Age=<正整数>（保留 Max-Age=0 删除语义）与所有 Expires=... 属性，
+// 清理移除属性后残留的空段与多余空格，保持 cookie 字符串格式整洁。
+func stripPersistentAttrs(cookie string) string {
+	// 先剥离 Expires 属性，再剥离正整数 Max-Age 属性（Max-Age=0 不受影响）
+	s := expiresRe.ReplaceAllString(cookie, "")
+	s = maxAgePositiveRe.ReplaceAllString(s, "")
+	// 按分号分段，剔除移除属性后留下的空段，重新以 "; " 拼接，避免 "; ;" 残留
+	parts := strings.Split(s, ";")
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "; ")
+}
+
+// sanitizeOnce 在首次写出响应前完成 Set-Cookie 头清洗（sync.Once 保证仅执行一次）
+func (w *sessionCookieWriter) sanitizeOnce() {
+	w.once.Do(func() {
+		cookies := w.Header()["Set-Cookie"]
+		if len(cookies) == 0 {
+			return
+		}
+		cleaned := make([]string, 0, len(cookies))
+		for _, c := range cookies {
+			if s := stripPersistentAttrs(c); s != "" {
+				cleaned = append(cleaned, s)
+			}
+		}
+		w.Header()["Set-Cookie"] = cleaned
+	})
+}
+
+// WriteHeader 在写出状态码前清洗 Set-Cookie 头
+func (w *sessionCookieWriter) WriteHeader(code int) {
+	w.sanitizeOnce()
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Write 在写出响应体前清洗 Set-Cookie 头（兜底：handler 未显式调用 WriteHeader 时由 Write 隐式触发）
+func (w *sessionCookieWriter) Write(b []byte) (int, error) {
+	w.sanitizeOnce()
+	return w.ResponseWriter.Write(b)
+}
+
+// Flush 委托底层 writer 的 Flush（若支持），保证 SSE/流式场景下清洗时机不被绕过
+func (w *sessionCookieWriter) Flush() {
+	w.sanitizeOnce()
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack 委托底层 writer 的 Hijack（若支持），兼容 websocket 场景
+func (w *sessionCookieWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, fmt.Errorf("底层 ResponseWriter 不支持 Hijack")
+}
+
+// enforceSessionCookies 全局中间件：包裹整个 http.Handler，
+// 强制所有下发 Cookie 为会话级——剥离 Max-Age(>0)/Expires 属性，保留 Max-Age=0 删除语义。
+// 在 main() 中包裹 http.DefaultServeMux，一处覆盖所有现有及未来路由。
+func enforceSessionCookies(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(&sessionCookieWriter{ResponseWriter: w}, r)
+	})
 }
 
 // loginPageData 登录页模板数据
@@ -691,5 +782,6 @@ func main() {
 	}()
 
 	log.Println("Web 界面运行在 :49809")
-	log.Fatal(http.ListenAndServe(":49809", nil))
+	// 全局强制会话级 Cookie：包裹 DefaultServeMux，一处覆盖所有现有及未来路由
+	log.Fatal(http.ListenAndServe(":49809", enforceSessionCookies(http.DefaultServeMux)))
 }
