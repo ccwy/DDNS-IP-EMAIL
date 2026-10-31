@@ -23,6 +23,8 @@
         <h2>🔐 登录</h2>
         {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
         <form action="/login" method="POST">
+            <!-- [H3] CSRF token,防范跨站请求伪造 -->
+            <input type="hidden" name="csrf_token" value="{{.CSRF}}">
             <div class="form-group">
                 <label>用户名</label>
                 <input type="text" name="username" required autofocus>
@@ -33,7 +35,7 @@
             </div>
             <button type="submit">登 录</button>
         </form>
-        {{if .IsDefault}}<div class="hint">默认账号密码：admin / admin<br>登录后请在配置中修改</div>{{end}}
+        <div class="hint">首次运行密码请查看容器启动日志</div>
     </div>
 </body>
 </html>

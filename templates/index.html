@@ -58,6 +58,8 @@
         </div>
 
         <form method="POST">
+            <!-- [H3] CSRF token,防范跨站请求伪造 -->
+            <input type="hidden" name="csrf_token" value="{{.CSRF}}">
             <div class="form-group">
                 <label>检测间隔 (分钟)</label>
                 <input type="number" name="interval_minutes" value="{{.Config.IntervalMinutes}}" min="1" required>
@@ -88,7 +90,8 @@
                 <div class="form-group"><label>SSL 端口</label><input type="text" name="smtp_port" value="{{.Config.SMTPPort}}" placeholder="465"></div>
                 <div class="form-group"><label>发件邮箱账号</label><input type="text" name="smtp_user" value="{{.Config.SMTPUser}}"></div>
                 <div class="form-group"><label>发件人名称 (显示名称)</label><input type="text" name="sender_name" value="{{.Config.SenderName}}" placeholder="例如: IP监控助手"></div>
-                <div class="form-group"><label>发件密码/授权码</label><input type="password" name="smtp_pass" value="{{.Config.SMTPPass}}"></div>
+                <!-- [M3] 密码不再回显前端,留空表示不修改 -->
+                <div class="form-group"><label>发件密码/授权码</label><input type="password" name="smtp_pass" value="" placeholder="留空表示不修改"></div>
                 <div class="form-group"><label>接收邮箱</label><input type="email" name="to_email" value="{{.Config.ToEmail}}"></div>
             </div>
 
@@ -133,6 +136,12 @@
     </div>
 
     <script>
+        // [H3] 读取页面表单中的 CSRF token
+        function getCSRF() {
+            var el = document.querySelector('input[name="csrf_token"]');
+            return el ? el.value : '';
+        }
+
         function toggleFields() {
             var type = document.getElementById("notifyType").value;
             document.getElementById("webhookSection").style.display = type === "webhook" ? "block" : "none";
@@ -200,15 +209,20 @@
 
             fetch('/api/change-password', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCSRF() }, // [H3]
                 body: JSON.stringify({ current_password: curPwd, new_user: newUser, new_password: newPwd })
             })
             .then(function(res) { return res.json(); })
             .then(function(data) {
                 if (data.success) {
-                    closePwdModal();
-                    alert(data.message || '修改成功，请重新登录');
-                    window.location.href = '/logout';
+                    // [M4] 改密后服务端已使所有旧会话失效,并为当前请求创建新会话(保持登录);
+                    // 必须用响应中的新 CSRF token 更新页面表单,否则后续请求会因 CSRF 不匹配而失败
+                    if (data.csrf) {
+                        var csrfEl = document.querySelector('input[name="csrf_token"]');
+                        if (csrfEl) { csrfEl.value = data.csrf; }
+                    }
+                    showPwdMsg(data.message || '修改成功', 'success');
+                    setTimeout(closePwdModal, 1500);
                 } else {
                     showPwdMsg(data.message || '修改失败', 'error');
                 }
