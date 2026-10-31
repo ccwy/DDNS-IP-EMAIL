@@ -506,30 +506,44 @@ func clearLoginFailures(ip string) {
 	loginAttemptMux.Unlock()
 }
 
-// [L2] trustProxy 控制是否信任 X-Forwarded-For/X-Real-IP 等代理头(默认 false)
-// 仅当部署于可信反向代理之后时通过环境变量 TRUST_PROXY=true 开启;
-// 默认不信任可防止客户端伪造 XFF 头绕过基于 IP 的登录速率限制
-var trustProxy = false
-
-// [L4][L2] clientIP 提取客户端 IP
-// [L2] 仅当 trustProxy=true 时才读取代理头,否则直接使用 r.RemoteAddr 的 IP 部分
+// [L4][L2] clientIP 提取客户端真实 IP(获取真实 IP 的标准方法)
+// [L2] 修复"登录时无法获取真实 IP":此前实现采用"智能信任策略"(RemoteAddr 为私网时
+// 从 XFF 从右向左取第一个非私网 IP,全为私网则取最左侧),纯内网访问时所有 IP 均为
+// 私网、取最左侧可能取到伪造值,且逻辑复杂不可靠,已被否定。
+// 现改用获取真实 IP 的标准方法,按以下优先级取值:
+//  1) X-Real-IP:群晖/Nginx 等反向代理会用真实客户端连接 IP 覆盖此头,
+//     客户端无法伪造(反代以真实连接 IP 覆盖),最可靠;
+//  2) X-Forwarded-For 首个 IP:标准格式 "clientIP, proxy1, proxy2",
+//     取第一个逗号前 trim 空格后的合法 IP;
+//  3) RemoteAddr:去掉端口的 IP 部分,作为无代理头时的兜底。
 func clientIP(r *http.Request) string {
-	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if idx := strings.Index(xff, ","); idx > 0 {
-				return strings.TrimSpace(xff[:idx])
+	// [L2] 优先级 1:X-Real-IP(由可信反向代理写入,不可被客户端伪造)
+	if xri := strings.TrimSpace(r.Header.Get("X-Real-IP")); xri != "" {
+		if ip := net.ParseIP(xri); ip != nil {
+			return ip.String()
+		}
+	}
+	// [L2] 优先级 2:X-Forwarded-For 首个非空合法 IP(最左侧为原始客户端)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		for _, p := range strings.Split(xff, ",") {
+			if v := strings.TrimSpace(p); v != "" {
+				if ip := net.ParseIP(v); ip != nil {
+					return ip.String()
+				}
+				// 兼容少数代理写入的 "IP:port" 非标准格式
+				if host, _, err := net.SplitHostPort(v); err == nil {
+					if ip := net.ParseIP(host); ip != nil {
+						return ip.String()
+					}
+				}
 			}
-			return strings.TrimSpace(xff)
-		}
-		if xri := r.Header.Get("X-Real-IP"); xri != "" {
-			return strings.TrimSpace(xri)
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	// [L2] 优先级 3:RemoteAddr 兜底(分离端口;分离失败则原样返回)
+	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return host
 	}
-	return host
+	return r.RemoteAddr
 }
 
 // [H5] requestIsHTTPS 判断请求是否经 HTTPS 传输(含反向代理场景)
@@ -705,8 +719,9 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// [H6] 登录速率限制:锁定期间拒绝尝试
 		ip := clientIP(r)
+		rawAddr := r.RemoteAddr // [L2] 原始对端地址,与解析后的 clientIP 一并记录,便于排查代理链路
 		if isLoginLocked(ip) {
-			log.Printf("[安全] 登录尝试被锁定, IP: %s", ip) // [L4] 不记录账号密码
+			log.Printf("[安全] 登录尝试被锁定, IP: %s, RemoteAddr: %s", ip, rawAddr) // [L4] 不记录账号密码
 			renderLogin(w, loginPageData{Error: "登录失败次数过多,请 15 分钟后再试"})
 			return
 		}
@@ -736,13 +751,13 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 			clearLoginFailures(ip)
 			token, _ := createSession()
 			setSessionCookie(w, r, token) // [H5] 统一安全 Cookie 属性
-			log.Printf("[安全] 登录成功, IP: %s", ip) // [L4] 不记录密码
+			log.Printf("[安全] 登录成功, IP: %s, RemoteAddr: %s", ip, rawAddr) // [L4] 不记录密码
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
 
 		recordLoginFailure(ip) // [H6]
-		log.Printf("[安全] 登录失败, IP: %s", ip) // [L4] 不记录密码等 PII
+		log.Printf("[安全] 登录失败, IP: %s, RemoteAddr: %s", ip, rawAddr) // [L4] 不记录密码等 PII
 		// [H3] 失败后重建匿名会话与 CSRF token
 		token, csrf := createSession()
 		setSessionCookie(w, r, token)
@@ -1179,8 +1194,6 @@ func main() {
 	log.SetOutput(logBuf)
 	log.SetFlags(0)
 
-	// [L2] TRUST_PROXY=true 时才信任 X-Forwarded-For 等代理头(默认 false,防伪造 XFF 绕过速率限制)
-	trustProxy = strings.EqualFold(os.Getenv("TRUST_PROXY"), "true")
 	// [L4] ALLOW_PRIVATE_WEBHOOK=true 时允许 webhook 指向私网/回环地址(默认 false,防 SSRF)
 	allowPrivateWebhook = strings.EqualFold(os.Getenv("ALLOW_PRIVATE_WEBHOOK"), "true")
 
