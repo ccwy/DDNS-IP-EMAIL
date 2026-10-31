@@ -6,6 +6,8 @@
 
 群晖Chat Webhook使用更简单，打开群晖chat，点开头像，点击整合，点击传入的Webhook，选择一个频道，然后复制URL，填入到DDNS IP 监控面板的Webhook URL，点击保存并测试就可以看到效果了
 
+加入了大量安全配置。
+
 使用方法：
 
 1，下载打包好的镜像，下载地址：https://github.com/ccwy/DDNS-IP-EMAIL/releases
