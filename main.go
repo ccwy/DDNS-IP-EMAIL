@@ -719,9 +719,9 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		// [H6] 登录速率限制:锁定期间拒绝尝试
 		ip := clientIP(r)
-		rawAddr := r.RemoteAddr // [L2] 原始对端地址,与解析后的 clientIP 一并记录,便于排查代理链路
+		// rawAddr 已移除: Docker 环境下 r.RemoteAddr 永远是网桥网关 IP(如 172.17.0.1),无排查价值;
 		if isLoginLocked(ip) {
-			log.Printf("[安全] 登录尝试被锁定, IP: %s, RemoteAddr: %s", ip, rawAddr) // [L4] 不记录账号密码
+			log.Printf("[安全] 登录尝试被锁定, IP: %s", ip)
 			renderLogin(w, loginPageData{Error: "登录失败次数过多,请 15 分钟后再试"})
 			return
 		}
@@ -751,13 +751,13 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 			clearLoginFailures(ip)
 			token, _ := createSession()
 			setSessionCookie(w, r, token) // [H5] 统一安全 Cookie 属性
-			log.Printf("[安全] 登录成功, IP: %s, RemoteAddr: %s", ip, rawAddr) // [L4] 不记录密码
+			log.Printf("[安全] 登录成功, IP: %s", ip)
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		}
 
 		recordLoginFailure(ip) // [H6]
-		log.Printf("[安全] 登录失败, IP: %s, RemoteAddr: %s", ip, rawAddr) // [L4] 不记录密码等 PII
+		log.Printf("[安全] 登录失败, IP: %s", ip)
 		// [H3] 失败后重建匿名会话与 CSRF token
 		token, csrf := createSession()
 		setSessionCookie(w, r, token)
